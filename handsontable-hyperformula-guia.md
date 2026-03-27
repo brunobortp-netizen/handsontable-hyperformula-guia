@@ -1114,7 +1114,104 @@ useEffect(() => {
 
 ---
 
-## 16. Resumo da Arquitetura de Eventos
+## 16. Undo/Redo Confiavel (incluindo formulas)
+
+### Problema
+
+O Undo nativo do Handsontable pode nao refletir corretamente fluxos customizados (formula bar, interceptacao de teclado, persistencia assincrona), especialmente quando a ultima edicao foi formula.
+
+### Solucao
+
+Manter listener global de Ctrl/Cmd+Z e Ctrl/Cmd+Y em capture phase:
+- Se editor inline estiver aberto, deixar o browser/editor tratar
+- Fora da edicao inline, usar stack custom (old/new source por celula) como prioridade, com fallback no plugin nativo `undoRedo`
+
+### Padrao tecnico
+
+1. Capturar snapshot em `beforeChange`
+2. Consolidar entrada no historico em `afterChange` (somente colunas editaveis, sem totals, sem source `loadData`/`customUndo`/`customRedo`)
+3. Em undo/redo custom usar `setDataAtCell(..., 'customUndo'|'customRedo')` para evitar loops de historico
+4. **NUNCA** fazer update de estado que recarregue a grade inteira a cada tecla (isso destroi o stack de undo)
+
+---
+
+## 17. Persistencia de Formulas no DB (nao so runtime)
+
+### Problema
+
+`afterChange` pode trazer valor computado, e nao necessariamente a formula digitada. Se salvar so numero na tabela principal, ao F5 a formula some.
+
+### Solucao
+
+Criar tabela especifica de formulas por celula:
+
+```sql
+-- Exemplo: tabela de formulas para planilha de comissoes
+CREATE TABLE CELULA_FORMULAS (
+  ID INT AUTO_INCREMENT PRIMARY KEY,
+  VENDEDOR_ID INT,
+  COLUNA VARCHAR(50),
+  FORMULA VARCHAR(500),
+  UNIQUE (VENDEDOR_ID, COLUNA)
+)
+```
+
+### Fluxo correto
+
+**No save:**
+1. Detectar formula por `getSourceDataAtCell(row, col)` (fallback: `newVal` string iniciando com `=`)
+2. Se formula: upsert em `CELULA_FORMULAS`
+3. Se valor numerico: salvar numero na tabela de dados + remover formula antiga dessa celula
+
+**No load:**
+1. Buscar dados base + formulas em paralelo
+2. Ao montar data da planilha, usar formula salva quando existir; senao valor numerico
+
+### Regra importante
+
+Persistencia assincrona nao pode resetar estado estrutural da grade durante edicao/undo.
+
+---
+
+## 18. "1 clique + = + seta" deve entrar em edicao de formula
+
+### Problema
+
+Com 1 clique, o usuario ainda esta em modo selecao. Ao digitar `=`, dependendo do timing, o editor nao entra de fato; a seta e tratada como navegacao da grade e nao como referencia de formula.
+
+### Solucao (Handsontable way)
+
+No `beforeKeyDown`, ao detectar `=`:
+
+```tsx
+// Interceptar = para forcar modo edicao
+hot.addHook('beforeKeyDown', (e: KeyboardEvent) => {
+  if (e.key === '=' && !hot.getActiveEditor()?.isOpened()) {
+    e.preventDefault()
+    e.stopPropagation()
+    e.stopImmediatePropagation()
+    const editor = hot.getActiveEditor()
+    editor?.beginEditing('=')
+    // Garantir textarea com = e cursor na posicao 1
+    const textarea = (editor as any)?.TEXTAREA
+    if (textarea) {
+      textarea.value = '='
+      textarea.setSelectionRange(1, 1)
+    }
+  }
+})
+```
+
+Adicionar fallback no `keydown` do proprio textarea do editor para `Arrow*`:
+- Se conteudo comeca com `=` e nao esta em text-mode forcado: bloquear propagacao, atualizar referencia (A1, B3:C8 etc.), manter foco no editor
+
+### Regra de ouro
+
+Nao depender so de `input` event para detectar "formula mode"; em alguns fluxos o valor pode ser inserido programaticamente. Sempre ter fallback por leitura direta do `textarea.value`.
+
+---
+
+## 19. Resumo da Arquitetura de Eventos
 
 ```
 Digitou "=" na celula     -> isFormulaMode = true
