@@ -1241,20 +1241,81 @@ if (!editorOpen && !formulaBarFocused && !inlineEditing) return
 
 Sem isso, mesmo com `isFormulaMode = true`, o handler de Arrow retorna cedo porque acha que nenhum editor esta aberto.
 
-### Adicionar fallback no `keydown` do proprio textarea do editor para `Arrow*`
-- Se conteudo comeca com `=` e nao esta em text-mode forcado: bloquear propagacao, atualizar referencia (A1, B3:C8 etc.), manter foco no editor
+### Fallback completo de Arrow no onKeyDown do textarea (CRITICO)
+
+Este e o fallback mais importante dos 4. No handler `onKeyDown` que e adicionado ao textarea dentro do `afterBeginEditing` (secao 8 do guia), apos o bloco de autocomplete, adicionar:
+
+```tsx
+// Dentro do onKeyDown do textarea (afterBeginEditing), APOS o bloco de autocomplete:
+
+// Fallback: Arrow keys no textarea quando conteudo comeca com "="
+// Este e o handler que REALMENTE faz o ponto 18 funcionar.
+// O beforeKeyDown do HotTable pode nao processar a Arrow porque:
+// 1. O evento no textarea dispara ANTES do beforeKeyDown do HotTable
+// 2. O HotTable pode ja ter decidido navegar entre celulas antes do nosso hook
+// Por isso, este listener no proprio textarea tem prioridade absoluta.
+if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)
+  && textarea.value.startsWith('=')
+  && !forceTextModeRef.current
+  && !(e.ctrlKey || e.metaKey)
+  && acItemsRef.current.length === 0
+) {
+  const cursorPos = textarea.selectionStart ?? textarea.value.length
+  if (isNavigatingRef.current || isAtRefInsertionPoint(textarea.value, cursorPos)) {
+    e.preventDefault()
+    e.stopPropagation()
+    e.stopImmediatePropagation()
+
+    isFormulaMode.current = true
+    const hotInst = hotRef.current?.hotInstance
+    if (!hotInst) return
+
+    const maxRow = hotInst.countRows() - 1
+    const maxCol = hotInst.countCols() - 1
+    let r = isNavigatingRef.current ? refCursorRef.current.row : currentRow.current
+    let c = isNavigatingRef.current ? refCursorRef.current.col : currentCol.current
+
+    if (e.key === 'ArrowLeft') c = Math.max(0, c - 1)
+    else if (e.key === 'ArrowRight') c = Math.min(maxCol, c + 1)
+    else if (e.key === 'ArrowUp') r = Math.max(0, r - 1)
+    else if (e.key === 'ArrowDown') r = Math.min(maxRow, r + 1)
+
+    if (e.shiftKey) {
+      if (!isNavigatingRef.current) {
+        refInsertPos.current = textarea.value.length
+        isNavigatingRef.current = true
+        refAnchor.current = { row: r, col: c }
+      }
+      updateNavRef(refAnchor.current.row, refAnchor.current.col, r, c)
+    } else {
+      updateNavRef(r, c, r, c)
+    }
+
+    textarea.focus()
+  }
+}
+```
+
+**Por que este fallback e o mais importante dos 4:**
+
+Os outros 3 detalhes (salvar ref no interceptor de `=`, fallback de `isFormulaMode` no `beforeKeyDown`, guard com `isEditingInline`) cobrem cenarios de timing no nivel do HotTable. Mas existe um cenario que nenhum deles resolve:
+
+O evento `keydown` no textarea dispara **ANTES** do `beforeKeyDown` do HotTable. Quando o `=` abre o editor via `beginEditing()`, o textarea recebe foco. A proxima tecla (Arrow) gera um `keydown` no textarea que borbulha. O HotTable tem seu proprio listener em capture phase, mas dependendo da implementacao interna, pode ja ter decidido tratar a Arrow como navegacao de celula antes que nosso `beforeKeyDown` hook tenha chance de interceptar.
+
+O listener direto no textarea e a **ultima linha de defesa** — ele roda no elemento que tem foco, tem a prioridade mais alta, e pode bloquear a propagacao antes que o HotTable veja o evento.
 
 ### Regra de ouro
 
 Nao depender so de `input` event para detectar "formula mode"; em alguns fluxos o valor pode ser inserido programaticamente. Sempre ter fallback por leitura direta do `textarea.value`.
 
-### Resumo dos 3 detalhes de timing criticos
+### Resumo dos 4 detalhes de timing criticos
 
-| Detalhe | Por que e necessario | Onde aplicar |
-|---------|---------------------|--------------|
-| Salvar `cellEditorInputRef` no interceptor de `=` | `afterBeginEditing` pode nao ter rodado quando a proxima tecla chega | Bloco do interceptor de `=` no `beforeKeyDown` |
-| Fallback lendo `textarea.value` do DOM | `isFormulaMode` pode estar `false` apos `beginEditing` programatico | Inicio do handler de Arrow no `beforeKeyDown` |
-| Guard extra com `isEditingInline` | `isOpened()` pode retornar `false` logo apos `beginEditing()` | Check de "editor aberto" antes de processar Arrow |
+| # | Detalhe | Por que e necessario | Onde aplicar |
+|---|---------|---------------------|--------------|
+| 1 | Salvar `cellEditorInputRef` no interceptor de `=` | `afterBeginEditing` pode nao ter rodado quando a proxima tecla chega | Bloco do interceptor de `=` no `beforeKeyDown` |
+| 2 | Fallback lendo `textarea.value` do DOM | `isFormulaMode` pode estar `false` apos `beginEditing` programatico | Inicio do handler de Arrow no `beforeKeyDown` |
+| 3 | Guard extra com `isEditingInline` | `isOpened()` pode retornar `false` logo apos `beginEditing()` | Check de "editor aberto" antes de processar Arrow |
+| 4 | Fallback completo de Arrow no `onKeyDown` do textarea | O evento no textarea dispara ANTES do `beforeKeyDown` do HotTable — e a ultima linha de defesa | `onKeyDown` do textarea dentro do `afterBeginEditing`, apos o bloco de autocomplete |
 
 ---
 
