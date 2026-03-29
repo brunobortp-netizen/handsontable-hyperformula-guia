@@ -1197,17 +1197,64 @@ hot.addHook('beforeKeyDown', (e: KeyboardEvent) => {
     if (textarea) {
       textarea.value = '='
       textarea.setSelectionRange(1, 1)
+      // CRITICO: salvar ref do textarea imediatamente — afterBeginEditing
+      // pode nao ter rodado quando a proxima tecla chegar
+      cellEditorInputRef.current = textarea
     }
+    isFormulaMode.current = true
+    isEditingInline.current = true
   }
 })
 ```
 
-Adicionar fallback no `keydown` do proprio textarea do editor para `Arrow*`:
+**CRITICO:** Salvar `cellEditorInputRef.current` e setar `isFormulaMode` + `isEditingInline` dentro do proprio interceptor de `=`. Nao esperar o `afterBeginEditing` — quando a Arrow chega logo em seguida, o hook pode nao ter rodado ainda, e `cellEditorInputRef.current` ainda seria `null`, fazendo `getFormulaText()` e `getCursorPos()` lerem do fallback errado.
+
+### Fallback no beforeKeyDown: detectar formula mode pelo DOM
+
+O `isFormulaMode` pode estar `false` mesmo com o editor aberto e com `=` (ex: beginEditing programatico onde o `onInput` nao rodou). No inicio do handler de `beforeKeyDown` para Arrow/navegacao, adicionar fallback:
+
+```tsx
+// Se isFormulaMode nao esta ativo mas o editor tem "=" (beginEditing programatico),
+// forcar o modo — nao depender so do onInput que pode nao ter rodado
+if (!isFormulaMode.current) {
+  const editor = hot.getActiveEditor()
+  const textarea = (editor as any)?.TEXTAREA as HTMLTextAreaElement | undefined
+  if (textarea && textarea.value.startsWith('=') && (editor as any)?.isOpened?.()) {
+    isFormulaMode.current = true
+    isEditingInline.current = true
+    cellEditorInputRef.current = textarea
+  } else {
+    return // nao esta em formula mode, deixar HT tratar
+  }
+}
+```
+
+### Guard de editorOpen com fallback para isEditingInline
+
+`isOpened()` pode retornar `false` logo apos `beginEditing()` programatico. Adicionar guard extra:
+
+```tsx
+const editorOpen = (hot.getActiveEditor() as any)?.isOpened?.()
+const inlineEditing = isEditingInline.current && cellEditorInputRef.current != null
+if (!editorOpen && !formulaBarFocused && !inlineEditing) return
+```
+
+Sem isso, mesmo com `isFormulaMode = true`, o handler de Arrow retorna cedo porque acha que nenhum editor esta aberto.
+
+### Adicionar fallback no `keydown` do proprio textarea do editor para `Arrow*`
 - Se conteudo comeca com `=` e nao esta em text-mode forcado: bloquear propagacao, atualizar referencia (A1, B3:C8 etc.), manter foco no editor
 
 ### Regra de ouro
 
 Nao depender so de `input` event para detectar "formula mode"; em alguns fluxos o valor pode ser inserido programaticamente. Sempre ter fallback por leitura direta do `textarea.value`.
+
+### Resumo dos 3 detalhes de timing criticos
+
+| Detalhe | Por que e necessario | Onde aplicar |
+|---------|---------------------|--------------|
+| Salvar `cellEditorInputRef` no interceptor de `=` | `afterBeginEditing` pode nao ter rodado quando a proxima tecla chega | Bloco do interceptor de `=` no `beforeKeyDown` |
+| Fallback lendo `textarea.value` do DOM | `isFormulaMode` pode estar `false` apos `beginEditing` programatico | Inicio do handler de Arrow no `beforeKeyDown` |
+| Guard extra com `isEditingInline` | `isOpened()` pode retornar `false` logo apos `beginEditing()` | Check de "editor aberto" antes de processar Arrow |
 
 ---
 
