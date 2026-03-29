@@ -1262,6 +1262,7 @@ if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)
 ) {
   const cursorPos = textarea.selectionStart ?? textarea.value.length
   if (isNavigatingRef.current || isAtRefInsertionPoint(textarea.value, cursorPos)) {
+    // Caso 1: inserir referencia de celula
     e.preventDefault()
     e.stopPropagation()
     e.stopImmediatePropagation()
@@ -1292,6 +1293,12 @@ if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)
     }
 
     textarea.focus()
+  } else {
+    // Caso 2: mover cursor no texto normalmente (ex: apos ")" em =SOMA(G4:G6))
+    // Bloquear propagacao para que o HT NAO feche o editor.
+    // SEM preventDefault — o textarea ja faz o que queremos (mover cursor).
+    e.stopPropagation()
+    e.stopImmediatePropagation()
   }
 }
 ```
@@ -1304,11 +1311,45 @@ O evento `keydown` no textarea dispara **ANTES** do `beforeKeyDown` do HotTable.
 
 O listener direto no textarea e a **ultima linha de defesa** — ele roda no elemento que tem foco, tem a prioridade mais alta, e pode bloquear a propagacao antes que o HotTable veja o evento.
 
+### Proteger movimentacao de cursor no modo "1 clique + ="
+
+Quando o editor e aberto via `beginEditing` programatico (1 clique + `=`), o Handsontable nao reconhece plenamente o editor como aberto. Isso causa um problema alem do point-and-click: quando `isAtRefInsertionPoint` retorna `false` (cursor em posicao onde a seta deveria mover o cursor no texto, como apos `)` em `=SOMA(G4:G6)`), o HotTable captura a seta e navega entre celulas, **fechando o editor**.
+
+No modo de edicao normal (duplo clique/Enter), o HotTable sabe que o editor esta aberto e deixa as setas moverem o cursor. No modo programatico, nao.
+
+**A correcao se aplica em 2 lugares:**
+
+**1. No `beforeKeyDown` do HotTable (secao 9.6)** — quando `isAtRefInsertionPoint` retorna `false` e estamos em edicao inline (especialmente via `beginEditing` programatico), bloquear propagacao **sem** `preventDefault`:
+
+```tsx
+if (!isAtRefInsertionPoint(text, cursorPos)) {
+  // Seta deve mover cursor no texto, NAO navegar celulas.
+  // stopImmediatePropagation impede o HT de fechar o editor.
+  // SEM preventDefault para que o textarea mova o cursor.
+  if (inlineEditing) {
+    event.stopImmediatePropagation()
+    ;(event as any).isImmediatePropagationStopped = () => true
+  }
+  return
+}
+```
+
+A variavel `inlineEditing` ja existe pelo guard do ponto 18:
+```tsx
+const inlineEditing = isEditingInline.current && cellEditorInputRef.current != null
+```
+
+**2. No fallback `onKeyDown` do textarea (secao 18)** — o bloco de Arrow keys ja tem o `else` com `stopPropagation` + `stopImmediatePropagation` sem `preventDefault` (ver codigo acima).
+
+**Por que ambos os lugares?** O `onKeyDown` do textarea dispara primeiro, mas se nao bloquear propagacao, o evento sobe para o `beforeKeyDown` do HotTable. Ambos precisam da mesma logica porque dependendo do timing e da ordem de listeners, qualquer um dos dois pode ser o primeiro a processar.
+
+**Diferenca chave:** `stopImmediatePropagation()` **sem** `preventDefault()`. O `stopPropagation` impede o HT de capturar o evento. A ausencia de `preventDefault` permite que o textarea processe a seta normalmente (movendo o cursor no texto).
+
 ### Regra de ouro
 
 Nao depender so de `input` event para detectar "formula mode"; em alguns fluxos o valor pode ser inserido programaticamente. Sempre ter fallback por leitura direta do `textarea.value`.
 
-### Resumo dos 4 detalhes de timing criticos
+### Resumo dos 5 detalhes de timing criticos
 
 | # | Detalhe | Por que e necessario | Onde aplicar |
 |---|---------|---------------------|--------------|
@@ -1316,6 +1357,7 @@ Nao depender so de `input` event para detectar "formula mode"; em alguns fluxos 
 | 2 | Fallback lendo `textarea.value` do DOM | `isFormulaMode` pode estar `false` apos `beginEditing` programatico | Inicio do handler de Arrow no `beforeKeyDown` |
 | 3 | Guard extra com `isEditingInline` | `isOpened()` pode retornar `false` logo apos `beginEditing()` | Check de "editor aberto" antes de processar Arrow |
 | 4 | Fallback completo de Arrow no `onKeyDown` do textarea | O evento no textarea dispara ANTES do `beforeKeyDown` do HotTable — e a ultima linha de defesa | `onKeyDown` do textarea dentro do `afterBeginEditing`, apos o bloco de autocomplete |
+| 5 | Bloquear propagacao de Arrow quando NAO e ponto de insercao | No modo `beginEditing` programatico, o HT nao reconhece o editor como aberto e trata Arrow como navegacao de celula, fechando o editor | `else` do `isAtRefInsertionPoint` no fallback do textarea E no `beforeKeyDown` do HotTable |
 
 ---
 
