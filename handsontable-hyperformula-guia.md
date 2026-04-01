@@ -1101,7 +1101,7 @@ useEffect(() => {
 | Erro | Causa | Solucao |
 |------|-------|---------|
 | `#NAME?` em formulas localizadas | Handsontable sobrescreve idioma para enGB | Passar CLASSE HyperFormula com `language: 'ptPT'` dentro de `engine` |
-| Tela em branco | `height="100%"` sem container de altura fixa | Usar `height="auto"` |
+| Tela em branco / height 0px | `height="100%"` — HT v17 aplica `overflow: clip` no wrapper interno, impedindo calculo de altura relativa | NUNCA usar `height="100%"`. Medir `clientHeight` do container em pixels e passar valor numerico (ver secao 20) |
 | "Language not registered" | `registerLanguage()` nao chamado no top-level | Chamar fora do componente |
 | Setas inserem ref quando deviam mover cursor | `isAtRefInsertionPoint` muito permissivo | Verificar charBefore E charAfter no meio do texto |
 | Referencia apaga o resto da formula | `updateNavRef` nao preserva sufixo | Capturar `refSuffix` ao iniciar navegacao |
@@ -1361,7 +1361,48 @@ Nao depender so de `input` event para detectar "formula mode"; em alguns fluxos 
 
 ---
 
-## 19. Resumo da Arquitetura de Eventos
+## 20. Altura do HotTable — NUNCA usar height="100%"
+
+### Problema
+
+O Handsontable v17 aplica `overflow: clip` no wrapper interno (`.ht-wrapper`). Quando voce passa `height="100%"`, esse wrapper tenta herdar 100% da altura do pai, mas o `overflow: clip` impede o calculo correto — resultando em `height: 0px` no `rootElement`, mesmo o container pai tendo altura definida. A planilha fica invisivel (tela em branco).
+
+### Solucao
+
+NUNCA usar `height="100%"` (relativo). Medir a altura real do container em pixels via `clientHeight` e passar o valor numerico direto pro HotTable. Escutar `resize` para recalcular se a janela mudar de tamanho.
+
+```tsx
+const containerRef = useRef<HTMLDivElement>(null)
+const [tableHeight, setTableHeight] = useState(400) // fallback seguro
+
+useEffect(() => {
+  const updateHeight = () => {
+    if (containerRef.current) {
+      setTableHeight(containerRef.current.clientHeight)
+    }
+  }
+  updateHeight()
+  window.addEventListener('resize', updateHeight)
+  return () => window.removeEventListener('resize', updateHeight)
+}, [])
+
+return (
+  <div ref={containerRef} style={{ height: '100%' }}>
+    <HotTable height={tableHeight} /* ... */ />
+  </div>
+)
+```
+
+### Regra
+
+| Errado | Certo |
+|--------|-------|
+| `<HotTable height="100%" />` | `<HotTable height={tableHeight} />` (pixels medidos) |
+| `<HotTable height="auto" />` | `<HotTable height={400} />` (valor numerico fixo ou calculado) |
+
+---
+
+## 21. Resumo da Arquitetura de Eventos
 
 ```
 Digitou "=" na celula     -> isFormulaMode = true
