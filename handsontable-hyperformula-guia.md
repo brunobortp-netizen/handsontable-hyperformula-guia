@@ -1167,6 +1167,23 @@ CREATE TABLE CELULA_FORMULAS (
 1. Buscar dados base + formulas em paralelo
 2. Ao montar data da planilha, usar formula salva quando existir; senao valor numerico
 
+### Auto-save obrigatorio (NUNCA botao de salvar)
+
+A persistencia deve ser **automatica** — salvar no `afterChange` com debounce (300-500ms). NUNCA criar botao de "Salvar" na planilha. O usuario espera o comportamento do Google Sheets/Excel Online: editou, salvou automaticamente.
+
+```tsx
+// Debounce para auto-save no afterChange
+const saveTimeout = useRef<NodeJS.Timeout>()
+
+const handleAfterChange = (changes: any, source: string) => {
+  if (!changes || source === 'loadData' || source === 'customUndo' || source === 'customRedo') return
+  clearTimeout(saveTimeout.current)
+  saveTimeout.current = setTimeout(() => {
+    // persistir dados alterados (ver fluxo de save acima)
+  }, 400)
+}
+```
+
 ### Regra importante
 
 Persistencia assincrona nao pode resetar estado estrutural da grade durante edicao/undo.
