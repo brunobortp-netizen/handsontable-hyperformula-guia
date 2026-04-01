@@ -30,6 +30,37 @@ import 'handsontable/styles/ht-theme-main.min.css'
 registerAllModules()
 ```
 
+### Altura do HotTable — NUNCA usar height="100%"
+
+O Handsontable v17 aplica `overflow: clip` no wrapper interno (`.ht-wrapper`). Com `height="100%"`, o calculo de altura falha e resulta em `height: 0px` (tela em branco). Medir `clientHeight` do container em pixels e passar valor numerico. Escutar `resize` para recalcular.
+
+```tsx
+const containerRef = useRef<HTMLDivElement>(null)
+const [tableHeight, setTableHeight] = useState(400) // fallback seguro
+
+useEffect(() => {
+  const updateHeight = () => {
+    if (containerRef.current) {
+      setTableHeight(containerRef.current.clientHeight)
+    }
+  }
+  updateHeight()
+  window.addEventListener('resize', updateHeight)
+  return () => window.removeEventListener('resize', updateHeight)
+}, [])
+
+return (
+  <div ref={containerRef} style={{ height: '100%' }}>
+    <HotTable height={tableHeight} /* ... */ />
+  </div>
+)
+```
+
+| Errado | Certo |
+|--------|-------|
+| `<HotTable height="100%" />` | `<HotTable height={tableHeight} />` (pixels medidos) |
+| `<HotTable height="auto" />` | `<HotTable height={400} />` (valor numerico fixo ou calculado) |
+
 ---
 
 ## 2. HyperFormula com Idioma Localizado (ex: Portugues)
@@ -1378,48 +1409,7 @@ Nao depender so de `input` event para detectar "formula mode"; em alguns fluxos 
 
 ---
 
-## 20. Altura do HotTable — NUNCA usar height="100%"
-
-### Problema
-
-O Handsontable v17 aplica `overflow: clip` no wrapper interno (`.ht-wrapper`). Quando voce passa `height="100%"`, esse wrapper tenta herdar 100% da altura do pai, mas o `overflow: clip` impede o calculo correto — resultando em `height: 0px` no `rootElement`, mesmo o container pai tendo altura definida. A planilha fica invisivel (tela em branco).
-
-### Solucao
-
-NUNCA usar `height="100%"` (relativo). Medir a altura real do container em pixels via `clientHeight` e passar o valor numerico direto pro HotTable. Escutar `resize` para recalcular se a janela mudar de tamanho.
-
-```tsx
-const containerRef = useRef<HTMLDivElement>(null)
-const [tableHeight, setTableHeight] = useState(400) // fallback seguro
-
-useEffect(() => {
-  const updateHeight = () => {
-    if (containerRef.current) {
-      setTableHeight(containerRef.current.clientHeight)
-    }
-  }
-  updateHeight()
-  window.addEventListener('resize', updateHeight)
-  return () => window.removeEventListener('resize', updateHeight)
-}, [])
-
-return (
-  <div ref={containerRef} style={{ height: '100%' }}>
-    <HotTable height={tableHeight} /* ... */ />
-  </div>
-)
-```
-
-### Regra
-
-| Errado | Certo |
-|--------|-------|
-| `<HotTable height="100%" />` | `<HotTable height={tableHeight} />` (pixels medidos) |
-| `<HotTable height="auto" />` | `<HotTable height={400} />` (valor numerico fixo ou calculado) |
-
----
-
-## 21. Resumo da Arquitetura de Eventos
+## 20. Resumo da Arquitetura de Eventos
 
 ```
 Digitou "=" na celula     -> isFormulaMode = true
