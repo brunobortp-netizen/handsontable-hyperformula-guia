@@ -1067,6 +1067,7 @@ O hook `afterChange` do Handsontable e o ponto central para persistir dados e re
 - Para formulas, persistir o **valor calculado** (`hot.getDataAtCell`), nao a formula em si
 - Chamar `hideAutocomplete()` e `clearNavigation()` para limpar estado de edicao
 - **Registrar log de auditoria** com: data/hora da alteracao, usuario que fez, celula alterada, valor anterior e valor novo
+- **NUNCA 1 chamada de Server Function por celula.** O laco abaixo so ACUMULA as alteracoes; a gravacao (dados + auditoria) sai em **UMA chamada com a lista inteira** (ver "Gravacao em lote" na secao 17). Colar um intervalo ou importar uma planilha entrega centenas de alteracoes de uma vez: 1 chamada por celula estoura o limite de execucoes por minuto do projeto (HTTP 429) e o dado do usuario se perde
 
 ```tsx
 const handleAfterChange = useCallback((
@@ -1086,9 +1087,11 @@ const handleAfterChange = useCallback((
     const nv = String(newVal ?? '')
     const finalVal = nv.startsWith('=') ? hot.getDataAtCell(row, col) : newVal
 
-    // Persistir no backend + registrar auditoria
+    // ACUMULAR (nao gravar aqui): a ultima alteracao de cada celula vence
     // Auditoria DEVE conter: timestamp, usuario, celula, oldVal, newVal
+    pendentes.current.set(`${row}:${col}`, { row, col, oldVal, newVal: finalVal })
   }
+  agendarGravacaoEmLote() // secao 17: UMA chamada com todas as alteracoes pendentes
 }, [])
 ```
 
@@ -1202,16 +1205,49 @@ CREATE TABLE CELULA_FORMULAS (
 
 A persistencia deve ser **automatica** — salvar no `afterChange` com debounce (300-500ms). NUNCA criar botao de "Salvar" na planilha. O usuario espera o comportamento do Google Sheets/Excel Online: editou, salvou automaticamente.
 
+### Gravacao em lote (OBRIGATORIO — nunca 1 chamada por celula)
+
+O projeto tem um **limite de execucoes de Server Function por minuto, somando todos os usuarios**. Ao estourar, a chamada volta HTTP 429 e **nao executa** — o que o usuario digitou se perde. Uma planilha que grava celula a celula estoura esse limite com poucos usuarios, e na hora quando alguem cola um intervalo ou importa uma planilha.
+
+Regra: o `afterChange` **acumula**; um temporizador **envia tudo de uma vez**.
+
+- Uma SF tipo **SQL** recebe a lista (JSON) e grava dados **e** auditoria na mesma execucao (`JSON_TABLE` sobre o parametro)
+- Mais de ~500 celulas no lote (colar/importar): fatiar em blocos de 500 e enviar **em sequencia**, nunca em paralelo
+- Falhou (inclusive 429): **manter as alteracoes na fila**, avisar o usuario que nao foi salvo e tentar de novo so no proximo ciclo — sem retry em laco
+- Ao sair da tela com alteracoes pendentes, enviar o lote antes
+
 ```tsx
-// Debounce para auto-save no afterChange
+// Auto-save em lote: afterChange acumula, o temporizador envia UMA chamada
+const pendentes = useRef(new Map<string, { row: number; col: number; oldVal: any; newVal: any }>())
 const saveTimeout = useRef<NodeJS.Timeout>()
+
+const agendarGravacaoEmLote = () => {
+  clearTimeout(saveTimeout.current)
+  saveTimeout.current = setTimeout(gravarLote, 400)
+}
+
+const gravarLote = async () => {
+  const lote = [...pendentes.current.values()]
+  if (!lote.length) return
+  pendentes.current.clear()
+  for (let i = 0; i < lote.length; i += 500) {
+    const bloco = lote.slice(i, i + 500)
+    try {
+      // UMA execucao grava o bloco inteiro (dados + auditoria)
+      await executeServerFunctionMitra({ projectId, serverFunctionId: SF_SALVAR_CELULAS, input: { celulas: JSON.stringify(bloco) } })
+    } catch (e) {
+      // devolve para a fila o que nao foi salvo (este bloco e os seguintes) e avisa o usuario
+      for (const c of lote.slice(i)) if (!pendentes.current.has(`${c.row}:${c.col}`)) pendentes.current.set(`${c.row}:${c.col}`, c)
+      avisarNaoSalvo(e)
+      return
+    }
+  }
+}
 
 const handleAfterChange = (changes: any, source: string) => {
   if (!changes || source === 'loadData' || source === 'customUndo' || source === 'customRedo') return
-  clearTimeout(saveTimeout.current)
-  saveTimeout.current = setTimeout(() => {
-    // persistir dados alterados (ver fluxo de save acima)
-  }, 400)
+  // ...acumular em `pendentes` como na secao 12...
+  agendarGravacaoEmLote()
 }
 ```
 
